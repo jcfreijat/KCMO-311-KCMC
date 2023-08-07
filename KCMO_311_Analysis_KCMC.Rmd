@@ -1,0 +1,352 @@
+---
+title: "R Notebook"
+output: 
+author: Julie Christine Freijat
+---
+
+**Data downloaded from:**
+
+<https://data.kcmo.org/311/311-Reported-Issues-by-Neighborhood/nzmv-f45g> <https://data.kcmo.org/311/311-Call-Center-Service-Requests-2007-March-2021/7at3-sxhp> <https://data.kcmo.org/311/311-Call-Center-Reported-Issues/d4px-6rwg>
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+```
+
+**Load in our data.**
+
+We will be using 311 call center data from March 2021 to the July 28. In order to look at the call center data at a council district level, we need to export each council district separately, add an identifying column and then bind them together. Keep in mind - there is some data that exists that is not assigned to a council district. This data will be loaded in as NA. We also have a data set that looks at the incidents at a neighborhood level. We will also be using the historical 311 call center data that logs the cases from 2007 to 2021.
+
+```{r}
+district_1 <- read_csv("data/311_Call_Center_Reported_Issues_District_1.csv")
+district_2 <- read_csv("data/311_Call_Center_Reported_Issues_District_2.csv")
+district_3 <- read_csv("data/311_Call_Center_Reported_Issues_District_3.csv")
+district_4 <- read_csv("data/311_Call_Center_Reported_Issues_District_4.csv")
+district_5 <- read_csv("data/311_Call_Center_Reported_Issues_District_5.csv")
+district_6 <- read_csv("data/311_Call_Center_Reported_Issues_District_6.csv")
+district_na <- read_csv("data/311_Call_Center_Reported_Issues_District_NA.csv")
+
+#Adding identifying columns
+district_1 <- district_1 %>% add_column(district=1:1)
+district_2 <- district_2 %>% add_column(district=2:2)
+district_3 <- district_3 %>% add_column(district=3:3)
+district_4 <- district_4 %>% add_column(district=4:4)
+district_5 <- district_5 %>% add_column(district=5:5)
+district_6 <- district_6 %>% add_column(district=6:6)
+district_na <- district_na %>% add_column(district=0:0)
+
+#Cleaning Names
+district_1 <- clean_names(district_1)
+district_2 <- clean_names(district_2)
+district_3 <- clean_names(district_3)
+district_4 <- clean_names(district_4)
+district_5 <- clean_names(district_5)
+district_6 <- clean_names(district_6)
+
+
+#Binding the rows
+all_districts <- bind_rows(district_1, district_2, district_3, district_4, district_5, district_6, district_na)
+
+#Cleaning the names
+all_districts <- clean_names(all_districts)
+
+#Creating new date columns
+all_districts <- all_districts %>% mutate(new_creation_date=mdy_hms(open_date_time))
+all_districts <- all_districts %>% mutate(creation_year=(year(new_creation_date)))
+all_districts <- all_districts %>% mutate(creation_month=(month(new_creation_date)))
+all_districts <- all_districts %>% mutate(creation_day=(day(new_creation_date)))
+all_districts <- all_districts %>% mutate(new_closed_date=mdy_hms(resolved_date))
+all_districts <- all_districts %>% mutate(closed_year=(year(new_closed_date)))
+all_districts <- all_districts %>% mutate(closed_month=(month(new_closed_date)))
+all_districts <- all_districts %>% mutate(closed_day=(day(new_closed_date)))
+
+#Doing a raw count to double check data 
+all_districts %>% count()
+raw_count_CD <- all_districts %>% group_by(district) %>% count()
+```
+
+```{r}
+#Load in neighborhood data
+nbhd <- read_csv("data/311nbhd-with-objectid.csv")
+kc_nb <- read_csv("data/Kansas_City_Neighborhood_Borders.csv")
+
+#Clean names and rename columns
+nbhd <- clean_names(nbhd)
+kc_nb <- clean_names(kc_nb)
+kc_nb <- rename(kc_nb, neighborhood=nbhname)
+kc_nb <- rename(kc_nb, nbhd_id=nbhid)
+
+#Creating new date columns
+nbhd <- nbhd %>% mutate(new_creation_date=mdy_hms(open_date_time))
+nbhd <- nbhd %>% mutate(creation_year=(year(new_creation_date)))
+nbhd <- nbhd %>% mutate(creation_month=(month(new_creation_date)))
+nbhd <- nbhd %>% mutate(creation_day=(day(new_creation_date)))
+nbhd <- nbhd %>% mutate(new_closed_date=mdy_hms(resolved_date))
+nbhd <- nbhd %>% mutate(closed_year=(year(new_closed_date)))
+nbhd <- nbhd %>% mutate(closed_month=(month(new_closed_date)))
+nbhd <- nbhd %>% mutate(closed_day=(day(new_closed_date)))
+
+#Doing a raw count of all cases by neighborhood
+raw_count_nb <- nbhd %>% group_by(neighborhood, objectid) %>% count() %>% arrange(desc(n))
+#Combining so I have other data if I want it
+kc_nb_all <- right_join(raw_count_nb, kc_nb, by="objectid")
+```
+
+```{r}
+#Load in historical data
+kcmo_historical <- read_csv("data/311_Call_Center_Service_Requests__2007_-_March_2021.csv")
+
+#Clean it
+kcmo_historical <- clean_names(kcmo_historical)
+```
+
+**Calculating averages and medians for each council district.**
+
+Some notes about how I calculated medians: The statuses of "canceled" and "referred" will not be included because they could indicate cases were not in the 311 jurisdiction, false or duplicates. I also excluded any days that are equal to NA or less than -1. When days open is equal to -1, it is due to a calculation error made when subtracting the open date from the resolved date. The open date records both the date and time of the incident, but the close date records only the date of when the incident is closed and sets the time equal to 12 a.m. For the purpose of calculations, anything greater than -1 and less than 1 were both counted as "0" days. Any cases with response times less than -1 were excluded (around 50 cases total).
+
+Medians are used in the final analysis because the medians and averages are very different, which indicates the data has a skewed distribution. In this scenario, medians are a better representation of the data.
+
+```{r}
+cd_1 <- all_districts %>% filter(district == "1" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_1 <- cd_1 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_1 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 43.06115
+cd_1 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=5
+
+cd_2 <- all_districts %>% filter(district == "2" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_2 <- cd_2 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_2 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 43.39681
+cd_2 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open)) 
+#median=5
+
+cd_3 <- all_districts %>% filter(district == "3" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_3 <- cd_3 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_3 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 61.3578
+cd_3 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=7
+
+cd_4 <- all_districts %>% filter(district == "4" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_4 <- cd_4 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_4 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 47.9106
+cd_4 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=6
+
+cd_5 <- all_districts %>% filter(district == "5" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_5 <- cd_5 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_5 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 55.405
+cd_5 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=6
+
+cd_6 <- all_districts %>% filter(district == "6" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+cd_6 <- cd_6 %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+cd_6 %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 38.17251
+cd_6 %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=4
+
+
+nbhd_median <- nbhd %>% filter(!current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+nbhd_median <- nbhd_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+nbhd_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+
+```
+
+**Raw incident count**
+
+```{r}
+all_districts %>% group_by(issue_type) %>% count %>% arrange(desc(n))
+incident_raw_count <- all_districts %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+```
+
+**Finding out the most common issues in different council districts**
+
+```{r}
+all_districts %>% filter(district=="1") %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+#trash/recycling/bulky services
+#property violations
+#street maintenance
+
+all_districts %>% filter(district=="2") %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+#trash/recycling/bulky services
+#street maintenance
+#water service
+
+all_districts %>% filter(district=="3") %>% group_by(issue_type) %>% count() %>% arrange(desc(n)) 
+#property violations
+#trash/recycling/bulky services
+#illegal dumping
+
+all_districts %>% filter(district=="4") %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+#property violations
+#street maintenance
+#trash/recycling/bulky services
+
+all_districts %>% filter(district=="5") %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+#trash/recycling/bulky services
+#property violations
+#water service
+
+all_districts %>% filter(district=="6") %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+#trash/recycling/bulky services
+#street maintenance
+#water service
+```
+
+```{r}
+pv_median <- all_districts %>% filter(issue_type=="Property Violations" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+pv_median <- pv_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+pv_median %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 141.5752	
+pv_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=55
+
+
+#NOTE: To include all incidents in this category, we have to filter by two issues since one is misspelled. 
+TRB_median <- all_districts %>% filter(issue_type=="Trash/Recycling and Bulky Services" | issue_type=="Trash / Recycling / Bulky Services" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+TRB_median <- TRB_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+TRB_median %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 63.55177	
+TRB_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=2
+
+water_median <- all_districts %>% filter(issue_type=="Water Service" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+water_median <- water_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+water_median %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 12.60814	
+water_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=3
+
+sm_median <- all_districts %>% filter(issue_type=="Street Maintenance" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+sm_median <- sm_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+sm_median %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open))
+#average= 52.44108	
+sm_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=21
+
+id_median <- all_districts %>% filter(issue_type=="Illegal Dumping" & !current_status == "canceled" & !current_status== "referred" & days_open>=-1 & !is.na(days_open))
+id_median <- id_median %>% mutate(new_days_open = replace(days_open, which(days_open<1), 0))
+id_median %>% arrange(new_days_open) %>% summarise(average = mean(new_days_open)) 
+#average= 18.15693	
+id_median %>% select(new_days_open) %>% arrange(new_days_open) %>% summarise(total = median(new_days_open))
+#median=7
+
+all_districts %>% group_by(issue_type) %>% count() %>% arrange(desc(n))
+```
+
+**Making data frames for issues of interest**
+
+```{r}
+illegal_dumping <- all_districts %>% 
+  group_by(district) %>% 
+  filter(issue_type == "Illegal Dumping") %>% 
+  count()
+
+#NOTE: Again including both versions here. 
+trash <- all_districts %>% 
+  group_by(district) %>% 
+  filter(issue_type == "Trash / Recycling / Bulky Services" | issue_type=="Trash/Recycling and Bulky Services") %>% 
+  count()
+
+streets <- all_districts %>% 
+  group_by(district) %>% 
+  filter(issue_type == "Street Maintenance") %>% 
+  count()
+
+property_violations <- all_districts %>% 
+  group_by(district) %>% 
+  filter(issue_type == "Property Violations") %>% 
+  count()
+
+water_service <- all_districts %>% 
+  group_by(district) %>% 
+  filter(issue_type == "Water Service") %>% 
+  count()
+```
+
+**Aggregating historical data**
+
+```{r}
+kcmo_his_year <- kcmo_historical %>% select(creation_year)
+kcmo_yr <- nbhd %>% select(creation_year)
+kcmo_all_yrs <- bind_rows(kcmo_his_year, kcmo_yr)
+kcmo_all_yrs <- kcmo_all_yrs %>% group_by(creation_year) %>% count()
+```
+
+**Creating a searchable database**
+
+NOTE: We used object id's to combine the files because some of the neighborhoods are unnamed and can't be accurately combined except for with the object id.
+
+```{r}
+#Calculating median days open
+median_days <- nbhd %>% 
+  group_by(objectid) %>% 
+  filter(!is.na(days_open) | days_open>-1)
+
+median_days <- median_days %>% 
+  mutate(new_days_open = replace(days_open, which(days_open<1), 0)) 
+
+median_days <- median_days %>% 
+  arrange(days_open) %>% 
+  summarise(total = median(days_open))
+
+median_days <- rename(median_days, median_days=total)
+
+#Calculating number of reports each year 
+count_over_time <- nbhd %>% 
+  group_by(creation_year, objectid) %>% 
+  count() %>% 
+  pivot_wider(names_from=creation_year, values_from=n)
+
+#Calculating number of reports each month each year
+count_over_time_month <- nbhd %>% group_by(creation_year, creation_month, objectid) %>% count()
+count_over_time_month <- count_over_time_month %>% 
+  unite("creation_date", creation_month:creation_year, sep="-")
+count_over_time_month <- count_over_time_month %>% 
+  pivot_wider(names_from=creation_date, values_from=n)
+
+#Join tables
+kcmo_nb_data_table <- left_join(raw_count_nb, count_over_time, by="objectid")
+kcmo_nb_data_table <- left_join(median_days, kcmo_nb_data_table, by="objectid")
+kcmo_nb_data_table <- left_join(count_over_time_month, kcmo_nb_data_table, by="objectid")
+
+#Counting issues  
+issue_count_nb <- nbhd %>% 
+  group_by(issue_type, objectid) %>% 
+  count() %>% 
+  arrange(desc(n))
+issue_count_nb <- rename(issue_count_nb, value=n)
+#Slicing top issue out
+issue_count_nb <- issue_count_nb %>% 
+  group_by(objectid) %>% 
+  slice_max(value, n = 1)
+issue_count_nb <- rename(issue_count_nb, issue_count = value)
+
+#Joining top issue to table 
+kcmo_nb_data_table <- left_join(issue_count_nb, kcmo_nb_data_table, by="objectid")
+
+#The names for the unnamed neighborhoods are added into the visualization rather than in R.
+
+```
+
+**Writing CSV's for export.**
+
+```{r}
+write.csv(illegal_dumping, "data//illegal_dumping.csv", row.names=FALSE)
+write.csv(trash, "data//trash.csv", row.names=FALSE)
+write.csv(streets, "data//streets.csv", row.names=FALSE)
+write.csv(property_violations, "data//property_violations.csv", row.names=FALSE)
+write.csv(water_service, "data//water_service.csv", row.names=FALSE)
+write.csv(raw_count_CD, "data//raw_count_CD.csv", row.names=FALSE)
+write.csv(raw_count_nb, "data//raw_count_nb.csv", row.names=FALSE)
+write.csv(kcmo_nb_data_table, "data//kcmo_nb_data_table.csv", row.names=FALSE)
+write.csv(kcmo_all_yrs, "data//kcmo_all_yrs.csv", row.names=FALSE)
+write.csv(incident_raw_count, "data//incident_raw_count.csv", row.names=FALSE)
+write.csv(median_days, "data//median_days.csv", row.names=FALSE)
+
+```
